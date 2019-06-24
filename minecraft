@@ -77,22 +77,16 @@ required_dirs="${minecraft_chdir}"
 required_files="${minecraft_jar}"
 
 minecraft_start() {
-	local cmd
-	cmd="${minecraft_screen} -d -m -S ${minecraft_session} ${minecraft_cmd}"
-	
 	if minecraft_running; then
 		[ -z "$rc_quiet" ] && echo "${name} already running?  session: ${minecraft_session}"
 		return 1
 	else
 		[ -z "$rc_quiet" ] && echo "Starting ${name}."
-		as_minecraft_user "$cmd"
+		as_minecraft_user "${minecraft_screen} -d -m -S ${minecraft_session} ${minecraft_cmd}"
 	fi
 }
 
 minecraft_stop() {
-	local cmd
-	cmd="${minecraft_screen} -p 0 -S ${minecraft_session} -X eval 'stuff ${minecraft_stopcmd}\015'"
-
 	if [ ! -z "$rc_force" ]; then
 		minecraft_kill_session
 		return # skip rest of function; that should do it
@@ -100,7 +94,7 @@ minecraft_stop() {
 
 	if minecraft_running; then
 		[ -z "$rc_quiet" ] && echo "Stopping ${name}."
-		as_minecraft_user "$cmd"
+		as_minecraft_user "${minecraft_screen} -p 0 -S ${minecraft_session} -X eval 'stuff ${minecraft_stopcmd}\015'"
 	else
 		[ -z "$rc_quiet" ] && echo "${name} is not running."
 		return 1
@@ -160,19 +154,13 @@ minecraft_show() {
 
 # for internal use; use `minecraft_wipe'
 minecraft_wipe_dead_sessions() {
-	local cmd
-	cmd="${minecraft_screen} -wipe >/dev/null"
-	
-	as_minecraft_user "$cmd"
+	as_minecraft_user "${minecraft_screen} -wipe >/dev/null"
 }
 
 # for internal use
 minecraft_kill_session() {
-	local cmd
-	cmd="${minecraft_screen} -XS ${minecraft_session} >/dev/null"
-	
 	[ -z "$rc_quiet" ] && echo "Attempting to kill screen session \`${minecraft_session}'."
-	as_minecraft_user "$cmd"
+	as_minecraft_user "${minecraft_screen} -XS ${minecraft_session} >/dev/null"
 }
 
 # for internal use
