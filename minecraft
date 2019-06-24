@@ -1,0 +1,199 @@
+#!/bin/sh
+#
+# mcinitd - simple BSD init script for a Minecraft server
+# Copyright 2018, 2019 Seth Price.  See LICENSE file for details.
+#
+# PROVIDE: minecraft
+# REQUIRE: LOGIN DAEMON NETWORKING mountcritlocal
+# KEYWORD: shutdown
+#
+# Add the following lines to `/etc/rc.conf.local' to enable and
+# configure the server:
+#
+#	minecraft_enable="YES" #required
+#	minecraft_user="<run server as this user>"
+#	minecraft_chdir="<run server in this directory>"
+#	minecraft_jar="<path to server JAR>"
+#	minecraft_memory="<memory to allocate>"
+#
+# For default setup, create a user named `minecraft', set its home
+# directory to `/usr/local/srv/minecraft', and place the server JAR
+# into said directory.  Make sure to change `$minecraft_jar' appro-
+# priately if using third-party software such as Spigot or Paperclip.
+# For more detailed information, refer to the project README,
+# or visit <https://www.gitlab.com/ssterling/mcinitd/>.
+#
+# NOTE: This script requires GNU Screen to function.
+#
+# Credit to Aikar for garbage collecting flags: <https://www.aikar.co/>
+
+. /etc/rc.subr
+
+name="minecraft"
+desc="Minecraft server init script"
+
+rcvar="minecraft_enable"
+
+load_rc_config ${name}
+
+# Due to the nature of running everything in `screen',
+# most of the commands are pretty much just custom
+start_cmd="${name}_start"
+stop_cmd="${name}_stop"
+restart_cmd="${name}_restart"
+
+extra_commands="status wipe show"
+status_cmd="${name}_status"
+wipe_cmd="${name}_wipe"
+show_cmd="${name}_show"
+
+# some are kinda undocumented for the end-user
+: ${minecraft_enable="NO"}
+: ${minecraft_jvm="/usr/local/bin/java"}
+: ${minecraft_screen="/usr/local/bin/screen"}
+: ${minecraft_session="minecraft-session"}
+: ${minecraft_user="minecraft"}
+: ${minecraft_chdir="/usr/local/srv/minecraft"}
+: ${minecraft_jar="${minecraft_chdir}/server.jar"}
+: ${minecraft_memory="2048M"}
+: ${minecraft_timeout="15"}
+: ${minecraft_stopcmd="stop"}
+: ${minecraft_flags="-XX:+UseG1GC \
+                     -XX:+UnlockExperimentalVMOptions \
+                     -XX:MaxGCPauseMillis=100 \
+                     -XX:+DisableExplicitGC \
+                     -XX:TargetSurvivorRatio=90 \
+                     -XX:G1NewSizePercent=50 \
+                     -XX:G1MaxNewSizePercent=80 \
+                     -XX:G1MixedGCLiveThresholdPercent=35 \
+                     -XX:+AlwaysPreTouch \
+                     -XX:+ParallelRefProcEnabled"}
+: ${minecraft_cmd="${minecraft_jvm} \
+                   -Xmx${minecraft_memory} -Xms${minecraft_memory} \
+		   ${minecraft_flags} \
+                   -jar ${minecraft_jar} nogui"}
+
+required_dirs="${minecraft_chdir}"
+required_files="${minecraft_jar}"
+
+minecraft_start() {
+	local cmd
+	cmd="${minecraft_screen} -d -m -S ${minecraft_session} ${minecraft_cmd}"
+	
+	if minecraft_running; then
+		[ -z "$rc_quiet" ] && echo "${name} already running?  session: ${minecraft_session}"
+		return 1
+	else
+		[ -z "$rc_quiet" ] && echo "Starting ${name}."
+		as_minecraft_user "$cmd"
+	fi
+}
+
+minecraft_stop() {
+	local cmd
+	cmd="${minecraft_screen} -p 0 -S ${minecraft_session} -X eval 'stuff ${minecraft_stopcmd}\015'"
+
+	if [ ! -z "$rc_force" ]; then
+		minecraft_kill_session
+		return # skip rest of function; that should do it
+	fi
+
+	if minecraft_running; then
+		[ -z "$rc_quiet" ] && echo "Stopping ${name}."
+		as_minecraft_user "$cmd"
+	else
+		[ -z "$rc_quiet" ] && echo "${name} is not running."
+		return 1
+	fi
+}
+
+minecraft_restart() {
+	local elapsed timeout
+	elapsed=0
+	if minecraft_running; then
+		minecraft_stop
+		[ -z "$rc_quiet" ] && echo -n "Waiting for server to exit"
+		while true; do
+			if ! minecraft_running; then
+				[ -z "$rc_quiet" ] && echo " done."
+				break
+			fi
+			elapsed=$((elapsed-1))
+			if [ $elapsed -ge $minecraft_timeout ]; then
+				[ -z "$rc_quiet" ] && echo "timed out at ${minecraft_timeout} seconds."
+				warn "Restart timed out waiting for session to exit.  If this repeatedly happens, consider changing the value of \`minecraft_timeout' in your rc.conf."
+				return 1
+			fi
+			[ ! -z "$rc_quiet" ] && echo -n "."
+			sleep 1
+		done
+		minecraft_start
+	else
+		[ -z "$rc_quiet" ] && echo "${name} is not running."
+		return 1
+	fi
+}
+
+minecraft_status() {
+	if minecraft_running; then
+		[ -z "$rc_quiet" ] && echo "${name} is running."
+	else
+		[ -z "$rc_quiet" ] && echo "${name} is not running."
+	fi
+}
+
+minecraft_wipe() {
+	[ -z "$rc_quiet" ] && echo "Wiping all dead screen sessions for user ${minecraft_user}."
+	minecraft_wipe_dead_sessions
+}
+
+minecraft_show() {
+	local cmd
+	cmd="${minecraft_screen} -r ${minecraft_session}"
+
+	if minecraft_running; then
+		as_minecraft_user "$cmd"
+	else
+		[ -z "$rc_quiet" ] && echo "${minecraft} is not running."
+	fi
+}
+
+# for internal use; use `minecraft_wipe'
+minecraft_wipe_dead_sessions() {
+	local cmd
+	cmd="${minecraft_screen} -wipe >/dev/null"
+	
+	as_minecraft_user "$cmd"
+}
+
+# for internal use
+minecraft_kill_session() {
+	local cmd
+	cmd="${minecraft_screen} -XS ${minecraft_session} >/dev/null"
+	
+	[ -z "$rc_quiet" ] && echo "Attempting to kill screen session \`${minecraft_session}'."
+	as_minecraft_user "$cmd"
+}
+
+# for internal use
+minecraft_running() {
+	local screen_pid
+	screen_pid=""
+
+	# Don't call it running if it's a dead session
+	minecraft_wipe_dead_sessions
+
+	screen_pid=`${PS} -x | grep -v grep | grep -i ${minecraft_screen} | grep ${minecraft_session} | awk '{print $1}'`
+	if [ -z "$screen_pid" ]; then
+		return 1
+	else
+		return 0
+	fi
+}
+
+# for internal use
+as_minecraft_user() {
+	su -m ${minecraft_user} -c "$@"
+}
+
+run_rc_command "$1"
